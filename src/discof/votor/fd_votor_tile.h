@@ -32,6 +32,14 @@ struct fd_votor_certed {
   fd_hash_t    block_id;
   fd_bls_agg_t agg;
   fd_bls_agg_t agg2;
+
+  /* Stake that voted (notarized or skipped) on a settled slot; certs
+     snapshot at the quorum crossing so are not usable here.
+     settled_total_stake 0 if unavailable. */
+
+  ulong        settled_slot;
+  ulong        settled_voted_stake;
+  ulong        settled_total_stake;
 };
 typedef struct fd_votor_certed fd_votor_certed_t;
 

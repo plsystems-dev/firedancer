@@ -359,6 +359,17 @@ setup_timing( fd_replay_tile_t * ctx,
   FD_TEST( ctx->backfill_path );
 }
 
+/* node_info is a shared topology object the replay tile always joins in
+   unprivileged_init.  Metric refresh paths read it unconditionally, so
+   every ctx needs one. */
+
+static void
+setup_node_info( fd_replay_tile_t * ctx ) {
+  static fd_node_info_box_t node_info_box[ 1 ];
+  ctx->node_info = fd_node_info_box_join( fd_node_info_box_new( node_info_box ) );
+  FD_TEST( ctx->node_info );
+}
+
 static void
 setup_ctx_with_fork_width( fd_replay_tile_t * ctx,
                            fd_wksp_t *        wksp,
@@ -457,6 +468,7 @@ setup_ctx_with_fork_width( fd_replay_tile_t * ctx,
   mock_epoch_boundary_fork_max = ULONG_MAX;
   mock_epoch_boundary_overflow = 0;
 
+  setup_node_info( ctx );
   setup_stem( ctx, wksp );
   setup_repair_input( ctx, wksp );
 }
@@ -958,6 +970,134 @@ test_snapshot_intervals_use_block_height( void ) {
 }
 
 static void
+test_snapshot_found_deleted_state( fd_wksp_t * wksp ) {
+  ulong  data_sz = fd_dcache_req_data_sz( sizeof(fd_snapmk_msg_t), 4UL, 1UL, 1 );
+  void * dcache  = fd_dcache_join( fd_dcache_new( fd_wksp_alloc_laddr( wksp,
+                     fd_dcache_align(), fd_dcache_footprint( data_sz, 0UL ), 1UL ), data_sz, 0UL ) );
+  FD_TEST( dcache );
+
+  static fd_replay_tile_t ctx[ 1 ];
+  fd_memset( ctx, 0, sizeof(fd_replay_tile_t) );
+
+  ulong in_idx = 0UL;
+  ctx->in[ in_idx ].mem = fd_wksp_containing( dcache );
+
+  ulong chunk0 = fd_dcache_compact_chunk0( ctx->in[ in_idx ].mem, dcache );
+
+  /* FOUND messages: keep max. */
+
+  fd_snapmk_msg_t * msg = fd_chunk_to_laddr( ctx->in[ in_idx ].mem, chunk0 );
+  msg->found.slot      = 100UL;
+  msg->found.base_slot = ULONG_MAX; /* full */
+  msg_snapmk( ctx, NULL, FD_SNAPMK_MSG_FOUND, in_idx, chunk0 );
+  FD_TEST( ctx->snapmk.snap_finished_full==100UL );
+  FD_TEST( ctx->snapmk.snap_finished_incr==0UL );
+
+  msg->found.slot = 200UL;
+  msg_snapmk( ctx, NULL, FD_SNAPMK_MSG_FOUND, in_idx, chunk0 );
+  FD_TEST( ctx->snapmk.snap_finished_full==200UL );
+
+  msg->found.slot = 150UL;
+  msg_snapmk( ctx, NULL, FD_SNAPMK_MSG_FOUND, in_idx, chunk0 );
+  FD_TEST( ctx->snapmk.snap_finished_full==200UL );
+
+  msg->found.slot      = 250UL;
+  msg->found.base_slot = 200UL; /* incremental */
+  msg_snapmk( ctx, NULL, FD_SNAPMK_MSG_FOUND, in_idx, chunk0 );
+  FD_TEST( ctx->snapmk.snap_finished_incr==250UL );
+  FD_TEST( ctx->snapmk.snap_finished_full==200UL );
+
+  msg->found.slot      = 210UL;
+  msg->found.base_slot = 200UL;
+  msg_snapmk( ctx, NULL, FD_SNAPMK_MSG_FOUND, in_idx, chunk0 );
+  FD_TEST( ctx->snapmk.snap_finished_incr==250UL );
+
+  /* DELETED messages: reset-if-match. */
+
+  fd_snapmk_msg_deleted_t * del = &msg->deleted;
+  del->slot      = 100UL;
+  del->base_slot = ULONG_MAX; /* full */
+  msg_snapmk( ctx, NULL, FD_SNAPMK_MSG_DELETED, in_idx, chunk0 );
+  FD_TEST( ctx->snapmk.snap_finished_full==200UL );
+
+  del->slot = 200UL;
+  msg_snapmk( ctx, NULL, FD_SNAPMK_MSG_DELETED, in_idx, chunk0 );
+  FD_TEST( ctx->snapmk.snap_finished_full==0UL );
+
+  del->slot      = 250UL;
+  del->base_slot = 200UL; /* incremental */
+  msg_snapmk( ctx, NULL, FD_SNAPMK_MSG_DELETED, in_idx, chunk0 );
+  FD_TEST( ctx->snapmk.snap_finished_incr==0UL );
+
+  del->slot      = 999UL;
+  del->base_slot = 200UL;
+  msg_snapmk( ctx, NULL, FD_SNAPMK_MSG_DELETED, in_idx, chunk0 );
+  FD_TEST( ctx->snapmk.snap_finished_incr==0UL );
+
+  FD_LOG_NOTICE(( "pass: test_snapshot_found_deleted_state" ));
+}
+
+/* Test vote_account_is_current (the production classifier used by
+   update_metric_delinquent_stake). */
+
+static void
+test_delinquent_classifier( void ) {
+  /* last_vote_slot==ULONG_MAX is always delinquent. */
+  FD_TEST( !vote_account_is_current(   0UL, ULONG_MAX ) );
+  FD_TEST( !vote_account_is_current( 128UL, ULONG_MAX ) );
+  FD_TEST( !vote_account_is_current( 500UL, ULONG_MAX ) );
+
+  /* cur_slot < 128: distance < 128, so all are current. */
+  FD_TEST(  vote_account_is_current(   0UL, 0UL ) );  /* distance 0 */
+  FD_TEST(  vote_account_is_current(   0UL, 1UL ) );
+  FD_TEST(  vote_account_is_current(  50UL, 0UL ) );  /* distance 50 */
+  FD_TEST(  vote_account_is_current(  50UL, 1UL ) );
+  FD_TEST(  vote_account_is_current( 127UL, 1UL ) );
+  FD_TEST(  vote_account_is_current( 127UL, 0UL ) );  /* distance 127 */
+
+  /* cur_slot >= 128: distance < 128 is current, >= 128 is delinquent. */
+  FD_TEST(  vote_account_is_current( 128UL, 128UL ) );  /* distance 0 */
+  FD_TEST(  vote_account_is_current( 128UL,   1UL ) );  /* distance 127 */
+  FD_TEST( !vote_account_is_current( 128UL,   0UL ) );  /* distance 128 */
+  FD_TEST(  vote_account_is_current( 500UL, 373UL ) );  /* distance 127 */
+  FD_TEST( !vote_account_is_current( 500UL, 372UL ) );  /* distance 128 */
+  FD_TEST( !vote_account_is_current( 500UL, 100UL ) );  /* distance 400 */
+
+  /* Future vote slot (cur_slot < last_vote_slot): always current. */
+  FD_TEST(  vote_account_is_current( 200UL, 300UL ) );
+  FD_TEST(  vote_account_is_current( 128UL, 999UL ) );
+
+  FD_LOG_NOTICE(( "pass: test_delinquent_classifier" ));
+}
+
+/* Test wait_info_healthy (the production health classifier used by
+   metrics_write). */
+
+static void
+test_wait_info_health_signal( void ) {
+  /* Not caught up: always unhealthy regardless of slots. */
+  FD_TEST( !wait_info_healthy( 0, 100UL, 100UL ) );
+  FD_TEST( !wait_info_healthy( 0, 100UL,  50UL ) );
+  FD_TEST( !wait_info_healthy( 0, ULONG_MAX, ULONG_MAX ) );
+
+  /* Caught up and close (distance <= 12): healthy. */
+  FD_TEST(  wait_info_healthy( 1, 100UL, 100UL ) );  /* distance 0 */
+  FD_TEST(  wait_info_healthy( 1, 112UL, 100UL ) );  /* distance 12 */
+  FD_TEST(  wait_info_healthy( 1,  50UL, 100UL ) );  /* turbine behind reset */
+
+  /* Caught up but fallen behind (distance > 12): unhealthy. */
+  FD_TEST( !wait_info_healthy( 1, 113UL, 100UL ) );  /* distance 13 */
+  FD_TEST( !wait_info_healthy( 1, 200UL, 100UL ) );  /* distance 100 */
+
+  /* ULONG_MAX maps to 0 for both fields. */
+  FD_TEST(  wait_info_healthy( 1, ULONG_MAX, ULONG_MAX ) );  /* both 0, distance 0 */
+  FD_TEST(  wait_info_healthy( 1, ULONG_MAX, 100UL ) );      /* turbine 0 <= reset */
+  FD_TEST( !wait_info_healthy( 1, 100UL, ULONG_MAX ) );      /* turbine 100, reset 0, distance 100 > 12 */
+
+  FD_LOG_NOTICE(( "pass: test_wait_info_health_signal" ));
+}
+
+static void
 start_fec_with_epoch_boundary_mode( fd_replay_tile_t * ctx,
                                     fd_reasm_fec_t *   fec,
                                     int                freeze_bank,
@@ -1171,6 +1311,7 @@ setup_rooting_ctx( fd_replay_tile_t * ctx,
                    fd_hash_t const *  root_id ) {
   memset( ctx, 0, sizeof(*ctx) );
   setup_timing( ctx, wksp );
+  setup_node_info( ctx );
   setup_stem( ctx, wksp );
   setup_votor_input( ctx, wksp );
   ctx->alpenglow = 1;
@@ -1306,6 +1447,51 @@ test_root_from_votor_cert( fd_wksp_t * wksp ) {
   FD_TEST( test_stem_seqs[ out_idx ]==seq0+1UL );
 
   FD_LOG_NOTICE(( "pass: test_root_from_votor_cert" ));
+}
+
+static void
+test_delinquent_from_settled_stake( fd_wksp_t * wksp ) {
+  static fd_replay_tile_t ctx[ 1 ];
+  fd_hash_t root_id = { .ul = { 100UL } };
+  setup_rooting_ctx( ctx, wksp, &root_id );
+
+  ulong               chunk  = ctx->in[ TEST_VOTOR_IN_IDX ].chunk0;
+  fd_votor_certed_t * certed = fd_chunk_to_laddr( ctx->in[ TEST_VOTOR_IN_IDX ].mem, chunk );
+  memset( certed, 0, sizeof(fd_votor_certed_t) );
+  certed->kind = AG_CERT_KIND_NOTAR; /* not a rooting cert */
+  certed->slot = 10UL;
+
+#define DELIVER() FD_TEST( !returnable_frag( ctx, TEST_VOTOR_IN_IDX, 0UL, FD_VOTOR_SIG_CERTED, chunk, sizeof(fd_votor_msg_t), 0UL, 0UL, 0UL, test_stem ) )
+
+  FD_TEST( !ctx->delinquent_known );
+
+  /* total 0 means the settled slot was unavailable; report nothing
+     rather than 100% delinquent. */
+  DELIVER();
+  FD_TEST( !ctx->delinquent_known );
+
+  certed->settled_slot        = 2UL;
+  certed->settled_voted_stake = 950UL;
+  certed->settled_total_stake = 1000UL;
+  DELIVER();
+  FD_TEST( ctx->delinquent_known );
+  FD_TEST( ctx->metrics.delinquent_stake_lamports    ==  50UL );
+  FD_TEST( ctx->metrics.cluster_active_stake_lamports==1000UL );
+
+  /* Full participation is 0 delinquent, not 100%. */
+  certed->settled_voted_stake = 1000UL;
+  DELIVER();
+  FD_TEST( ctx->metrics.delinquent_stake_lamports==0UL );
+
+  /* voted>total would underflow; ignore it. */
+  ctx->metrics.delinquent_stake_lamports = 7UL;
+  certed->settled_voted_stake = 2000UL;
+  DELIVER();
+  FD_TEST( ctx->metrics.delinquent_stake_lamports==7UL );
+
+#undef DELIVER
+
+  FD_LOG_NOTICE(( "pass: test_delinquent_from_settled_stake" ));
 }
 
 static void
@@ -1503,6 +1689,40 @@ test_root_from_footer( fd_wksp_t * wksp ) {
   mock_footer_finalize = 0;
 
   FD_LOG_NOTICE(( "pass: test_root_from_footer" ));
+}
+
+static void
+test_slot_completed_keeps_leader_sentinel( fd_wksp_t * wksp ) {
+  static fd_replay_tile_t ctx[ 1 ];
+  fd_hash_t root_id = { .ul = { 100UL } };
+  fd_hash_t id1     = { .ul = { 201UL } };
+  fd_bank_t * root = setup_rooting_ctx( ctx, wksp, &root_id );
+  fd_blockhashes_init( &root->f.block_hash_queue, 42UL );
+  FD_TEST( fd_blockhashes_push_new( &root->f.block_hash_queue, &root_id ) );
+
+  mock_footer_finalize = 1;
+  memset( mock_footer, 0, sizeof(fd_block_footer_t) );
+
+  /* What the leader schedule would hand back if it were consulted. */
+  mock_next_leader_slot = 777UL;
+  ctx->next_leader_slot = ULONG_MAX;
+
+  fd_bank_t * b1 = add_replayable_block( ctx, root, 1UL, &id1 );
+  FD_TEST( !replay_block_finalize( ctx, test_stem, b1 ) );
+  FD_TEST( b1->state==FD_BANK_STATE_FROZEN );
+
+  /* Completing a slot under Alpenglow must not disturb
+     next_leader_slot: ULONG_MAX is the sentinel try_end_leader_slot
+     uses to continue the leader window. */
+  FD_TEST( ctx->next_leader_slot==ULONG_MAX );
+
+  /* The epoch info the wait command reads is still refreshed. */
+  FD_TEST( ctx->reset_slot==1UL       );
+  FD_TEST( ctx->slots_per_epoch==128UL );
+  FD_TEST( ctx->epoch_end_slot==127UL  );
+
+  mock_footer_finalize = 0;
+  FD_LOG_NOTICE(( "pass: test_slot_completed_keeps_leader_sentinel" ));
 }
 
 static void
@@ -2683,10 +2903,6 @@ test_oc_skips_unfrozen_bank( fd_wksp_t * wksp ) {
   static fd_replay_tile_t ctx[ 1 ];
   setup_ctx( ctx, wksp );
 
-  static fd_node_info_box_t node_info_box[ 1 ];
-  ctx->node_info = fd_node_info_box_join( fd_node_info_box_new( node_info_box ) );
-  FD_TEST( ctx->node_info );
-
   fd_hash_t mr_root = { .ul = { 100UL } };
   init_root_fec( ctx, &mr_root );
 
@@ -3650,13 +3866,18 @@ main( int     argc,
   test_reception_metrics_sidecar( wksp );           fd_wksp_reset( wksp, 42U );
   test_reward_cert_signer_count();
   test_snapshot_intervals_use_block_height();
+  test_snapshot_found_deleted_state( wksp );        fd_wksp_reset( wksp, 42U );
+  test_delinquent_classifier();
+  test_wait_info_health_signal();
   test_consensus_root_notification_handoff( wksp ); fd_wksp_reset( wksp, 42U );
   test_root_from_votor_cert( wksp );                fd_wksp_reset( wksp, 42U );
+  test_delinquent_from_settled_stake( wksp );       fd_wksp_reset( wksp, 42U );
   test_root_waits_for_replay( wksp );               fd_wksp_reset( wksp, 42U );
   test_root_out_of_order_certs( wksp );             fd_wksp_reset( wksp, 42U );
   test_root_lagging_replay( wksp );                 fd_wksp_reset( wksp, 42U );
   test_root_newer_first( wksp );                    fd_wksp_reset( wksp, 42U );
   test_root_from_footer( wksp );                    fd_wksp_reset( wksp, 42U );
+  test_slot_completed_keeps_leader_sentinel( wksp ); fd_wksp_reset( wksp, 42U );
   test_epoch_boundary_fork_width_evict( wksp );     fd_wksp_reset( wksp, 42U );
   test_banks_full_prune_leaf( wksp );               fd_wksp_reset( wksp, 42U );
   test_leader_fec_bypasses_backpressure( wksp, 0 ); fd_wksp_reset( wksp, 42U );

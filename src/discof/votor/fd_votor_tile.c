@@ -928,12 +928,24 @@ after_credit( fd_votor_tile_t *   ctx,
     if( FD_UNLIKELY( ctx->scratch.pool_event.kind==AG_EVENT_POOL_CERT_CREATED ) ) {
       ulong                   slot  = ag_cert_slot( cert );
       ag_slot_state_t const * state = ag_pool_slot_state( ctx->pool, slot );
+
+      ulong settled_slot = slot>=AG_REWARD_SLOT_DELTA ? slot-AG_REWARD_SLOT_DELTA : 0UL;
+      ulong settled_voted_stake = 0UL;
+      ulong settled_total_stake = 0UL;
+      if( FD_LIKELY( slot>=AG_REWARD_SLOT_DELTA ) ) {
+        ag_slot_state_t const * settled_state = ag_pool_slot_state( ctx->pool, settled_slot );
+        ag_epoch_info_t const * settled_epoch = fd_ptr_if( settled_slot>=ctx->next_epoch_slot, ctx->next_epoch_info, fd_ptr_if( settled_slot>=ctx->curr_epoch_slot, ctx->curr_epoch_info, ctx->prev_epoch_info ) );
+        if( FD_LIKELY( settled_state && settled_epoch ) ) {
+          settled_voted_stake = settled_state->votes.notar_or_skip_stake;
+          settled_total_stake = ag_epoch_info_total_stake( settled_epoch );
+        }
+      }
       fd_votor_msg_t *        chunk = fd_chunk_to_laddr( ctx->votor_out_mem, ctx->votor_out_chunk );
       fd_votor_certed_t *     certed = &chunk->certed;
       switch( cert->kind ) {
       case AG_CERT_KIND_FINAL:
         if( FD_LIKELY( state && state->certs.notar.slot != ULONG_MAX ) ) {
-          *certed = (fd_votor_certed_t){ .kind = cert->kind, .slot = slot, .block_id = FD_LOAD( fd_hash_t, state->certs.notar.block_hash ), .agg = state->certs.finalize.agg, .agg2 = state->certs.notar.agg };
+          *certed = (fd_votor_certed_t){ .kind = cert->kind, .slot = slot, .block_id = FD_LOAD( fd_hash_t, state->certs.notar.block_hash ), .agg = state->certs.finalize.agg, .agg2 = state->certs.notar.agg, .settled_slot = settled_slot, .settled_voted_stake = settled_voted_stake, .settled_total_stake = settled_total_stake };
           fd_stem_publish( stem, OUT_IDX_VOTOR, FD_VOTOR_SIG_CERTED, ctx->votor_out_chunk, sizeof(fd_votor_msg_t), 0UL, fd_frag_meta_ts_comp( fd_tickcount() ), fd_frag_meta_ts_comp( fd_tickcount() ) );
           ctx->votor_out_chunk = fd_dcache_compact_next( ctx->votor_out_chunk, sizeof(fd_votor_msg_t), ctx->votor_out_chunk0, ctx->votor_out_wmark );
         } else {
@@ -941,12 +953,12 @@ after_credit( fd_votor_tile_t *   ctx,
         }
         break;
       case AG_CERT_KIND_FAST_FINAL:
-        *certed = (fd_votor_certed_t){ .kind = cert->kind, .slot = slot, .block_id = FD_LOAD( fd_hash_t, cert->fast_final.block_hash ), .agg = cert->fast_final.agg };
+        *certed = (fd_votor_certed_t){ .kind = cert->kind, .slot = slot, .block_id = FD_LOAD( fd_hash_t, cert->fast_final.block_hash ), .agg = cert->fast_final.agg, .settled_slot = settled_slot, .settled_voted_stake = settled_voted_stake, .settled_total_stake = settled_total_stake };
         fd_stem_publish( stem, OUT_IDX_VOTOR, FD_VOTOR_SIG_CERTED, ctx->votor_out_chunk, sizeof(fd_votor_msg_t), 0UL, fd_frag_meta_ts_comp( fd_tickcount() ), fd_frag_meta_ts_comp( fd_tickcount() ) );
         ctx->votor_out_chunk = fd_dcache_compact_next( ctx->votor_out_chunk, sizeof(fd_votor_msg_t), ctx->votor_out_chunk0, ctx->votor_out_wmark );
         break;
       case AG_CERT_KIND_NOTAR:
-        *certed = (fd_votor_certed_t){ .kind = cert->kind, .slot = slot, .block_id = FD_LOAD( fd_hash_t, cert->notar.block_hash ), .agg = cert->notar.agg };
+        *certed = (fd_votor_certed_t){ .kind = cert->kind, .slot = slot, .block_id = FD_LOAD( fd_hash_t, cert->notar.block_hash ), .agg = cert->notar.agg, .settled_slot = settled_slot, .settled_voted_stake = settled_voted_stake, .settled_total_stake = settled_total_stake };
         fd_stem_publish( stem, OUT_IDX_VOTOR, FD_VOTOR_SIG_CERTED, ctx->votor_out_chunk, sizeof(fd_votor_msg_t), 0UL, fd_frag_meta_ts_comp( fd_tickcount() ), fd_frag_meta_ts_comp( fd_tickcount() ) );
         ctx->votor_out_chunk = fd_dcache_compact_next( ctx->votor_out_chunk, sizeof(fd_votor_msg_t), ctx->votor_out_chunk0, ctx->votor_out_wmark );
 
@@ -954,24 +966,25 @@ after_credit( fd_votor_tile_t *   ctx,
         if( FD_UNLIKELY( ctx->highest_unotar_final_slot==slot && state && state->certs.finalize.slot != ULONG_MAX ) ) {
           chunk   = fd_chunk_to_laddr( ctx->votor_out_mem, ctx->votor_out_chunk );
           certed  = &chunk->certed;
-          *certed = (fd_votor_certed_t){ .kind = AG_CERT_KIND_FINAL, .slot = slot, .block_id = FD_LOAD( fd_hash_t, cert->notar.block_hash ), .agg = state->certs.finalize.agg, .agg2 = cert->notar.agg };
+          *certed = (fd_votor_certed_t){ .kind = AG_CERT_KIND_FINAL, .slot = slot, .block_id = FD_LOAD( fd_hash_t, cert->notar.block_hash ), .agg = state->certs.finalize.agg, .agg2 = cert->notar.agg, .settled_slot = settled_slot, .settled_voted_stake = settled_voted_stake, .settled_total_stake = settled_total_stake };
           fd_stem_publish( stem, OUT_IDX_VOTOR, FD_VOTOR_SIG_CERTED, ctx->votor_out_chunk, sizeof(fd_votor_msg_t), 0UL, fd_frag_meta_ts_comp( fd_tickcount() ), fd_frag_meta_ts_comp( fd_tickcount() ) );
           ctx->votor_out_chunk = fd_dcache_compact_next( ctx->votor_out_chunk, sizeof(fd_votor_msg_t), ctx->votor_out_chunk0, ctx->votor_out_wmark );
         }
         break;
       case AG_CERT_KIND_NOTAR_FALLBACK:
-        *certed = (fd_votor_certed_t){ .kind = cert->kind, .slot = slot, .block_id = FD_LOAD( fd_hash_t, cert->notar_fallback.block_hash ), .agg = cert->notar_fallback.agg_notar, .agg2 = cert->notar_fallback.agg_notar_fallback };
+        *certed = (fd_votor_certed_t){ .kind = cert->kind, .slot = slot, .block_id = FD_LOAD( fd_hash_t, cert->notar_fallback.block_hash ), .agg = cert->notar_fallback.agg_notar, .agg2 = cert->notar_fallback.agg_notar_fallback, .settled_slot = settled_slot, .settled_voted_stake = settled_voted_stake, .settled_total_stake = settled_total_stake };
         fd_stem_publish( stem, OUT_IDX_VOTOR, FD_VOTOR_SIG_CERTED, ctx->votor_out_chunk, sizeof(fd_votor_msg_t), 0UL, fd_frag_meta_ts_comp( fd_tickcount() ), fd_frag_meta_ts_comp( fd_tickcount() ) );
         ctx->votor_out_chunk = fd_dcache_compact_next( ctx->votor_out_chunk, sizeof(fd_votor_msg_t), ctx->votor_out_chunk0, ctx->votor_out_wmark );
         break;
       case AG_CERT_KIND_SKIP:
-        *certed = (fd_votor_certed_t){ .kind = cert->kind, .slot = slot, .agg = cert->skip.agg_skip, .agg2 = cert->skip.agg_skip_fallback };
+        *certed = (fd_votor_certed_t){ .kind = cert->kind, .slot = slot, .agg = cert->skip.agg_skip, .agg2 = cert->skip.agg_skip_fallback, .settled_slot = settled_slot, .settled_voted_stake = settled_voted_stake, .settled_total_stake = settled_total_stake };
         fd_stem_publish( stem, OUT_IDX_VOTOR, FD_VOTOR_SIG_CERTED, ctx->votor_out_chunk, sizeof(fd_votor_msg_t), 0UL, fd_frag_meta_ts_comp( fd_tickcount() ), fd_frag_meta_ts_comp( fd_tickcount() ) );
         ctx->votor_out_chunk = fd_dcache_compact_next( ctx->votor_out_chunk, sizeof(fd_votor_msg_t), ctx->votor_out_chunk0, ctx->votor_out_wmark );
         break;
       default:
         FD_LOG_CRIT(( "unreachable" ));
       }
+
     }
     *charge_busy = 1;
   }
