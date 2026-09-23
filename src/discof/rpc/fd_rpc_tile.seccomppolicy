@@ -18,7 +18,10 @@
 #                 can poll all file descriptors across all tiles at once.
 #                 This tile needs access to the outer file descriptor to
 #                 rearm the inner set after a drain.
-uint logfile_fd, uint rpc_socket_fd, uint accdb_ro_fd, uint epoll_inner_fd, uint epoll_outer_fd
+#
+# accdb_ring_fd: The io_uring used for batched accounts database I/O,
+#                or -1 if disabled.
+uint logfile_fd, uint rpc_socket_fd, uint accdb_ro_fd, uint epoll_inner_fd, uint epoll_outer_fd, uint accdb_ring_fd
 
 # logging: all log messages are written to a file and/or pipe
 #
@@ -114,3 +117,8 @@ epoll_ctl: (or (eq (arg 0) epoll_inner_fd)
 #
 # arg 0 is the file descriptor to read from.
 preadv2: (eq (arg 0) accdb_ro_fd)
+
+# accounts database: submit and wait for batched disk I/O
+#
+# arg 0 is the io_uring file descriptor.
+io_uring_enter: (eq (arg 0) accdb_ring_fd)
