@@ -1173,6 +1173,7 @@ fork_upsert( fd_stake_delegations_t *      stake_delegations,
     in_memory->fork_idx  = fork_idx;
     return;
   }
+
   if( FD_UNLIKELY( query->disk_idx!=UINT_MAX ) ) {
     query->disk_ele.delegation = *delegation;
     disk_delta_write( stake_delegations, query->disk_idx, &query->disk_ele );
