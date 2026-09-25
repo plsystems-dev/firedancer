@@ -51,14 +51,10 @@ lg_sign_depth( fd_topo_tile_t const * tile ) {
 /* block_max is the chainer's block pool size, which is also the
    schedulor's task count. */
 
-FD_FN_PURE static inline ulong
-block_max( fd_topo_tile_t const * tile ) {
-  return tile->rotor.slot_max * FD_CHAINER_SLOT_VER_MAX;
-}
 
 FD_FN_PURE static inline ulong
 fec_max( fd_topo_tile_t const * tile ) {
-  return block_max( tile ) * ( tile->rotor.max_shreds_per_block / FD_FEC_SHRED_CNT );
+  return fd_chainer_blk_max( tile->rotor.slot_max ) * ( tile->rotor.max_shreds_per_block / FD_FEC_SHRED_CNT );
 }
 
 FD_FN_PURE static inline ulong
@@ -67,7 +63,7 @@ scratch_footprint( fd_topo_tile_t const * tile ) {
   l = FD_LAYOUT_APPEND( l, alignof(ctx_t),          sizeof(ctx_t)                                                                     );
   l = FD_LAYOUT_APPEND( l, fd_repair_align(),       fd_repair_footprint    ()                                                         );
   l = FD_LAYOUT_APPEND( l, fd_chainer_align(),      fd_chainer_footprint   ( tile->rotor.slot_max, tile->rotor.max_shreds_per_block ) );
-  l = FD_LAYOUT_APPEND( l, fd_schedulor_align(),    fd_schedulor_footprint ( block_max( tile ) )                                      );
+  l = FD_LAYOUT_APPEND( l, fd_schedulor_align(),    fd_schedulor_footprint ( fd_chainer_blk_max( tile->rotor.slot_max ) )             );
   l = FD_LAYOUT_APPEND( l, fd_requestor_align(),    fd_requestor_footprint ()                                                         );
   l = FD_LAYOUT_APPEND( l, fd_policy_align(),       fd_policy_footprint    ( FD_REPAIR_PEER_MAX )                                     );
   l = FD_LAYOUT_APPEND( l, fd_inflights_align(),    fd_inflights_footprint ()                                                         );
@@ -986,7 +982,7 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx_t * ctx        = FD_SCRATCH_ALLOC_APPEND( l, alignof(ctx_t),        sizeof(ctx_t)                                                                     );
   ctx->protocol      = FD_SCRATCH_ALLOC_APPEND( l, fd_repair_align(),     fd_repair_footprint    ()                                                         );
   ctx->chainer       = FD_SCRATCH_ALLOC_APPEND( l, fd_chainer_align(),    fd_chainer_footprint   ( tile->rotor.slot_max, tile->rotor.max_shreds_per_block ) );
-  ctx->schedulor     = FD_SCRATCH_ALLOC_APPEND( l, fd_schedulor_align(),  fd_schedulor_footprint ( block_max( tile ) )                                      );
+  ctx->schedulor     = FD_SCRATCH_ALLOC_APPEND( l, fd_schedulor_align(),  fd_schedulor_footprint ( fd_chainer_blk_max( tile->rotor.slot_max ) )             );
   ctx->requestor     = FD_SCRATCH_ALLOC_APPEND( l, fd_requestor_align(),  fd_requestor_footprint ()                                                         );
   ctx->policy        = FD_SCRATCH_ALLOC_APPEND( l, fd_policy_align(),     fd_policy_footprint    ( FD_REPAIR_PEER_MAX )                                     );
   ctx->rtt           = FD_SCRATCH_ALLOC_APPEND( l, fd_inflights_align(),  fd_inflights_footprint ()                                                         );
@@ -999,7 +995,7 @@ unprivileged_init( fd_topo_t const *      topo,
     FD_LOG_ERR(( "scratch overflow %lu %lu %lu", scratch_top - (ulong)scratch - scratch_footprint( tile ), scratch_top, (ulong)scratch + scratch_footprint( tile ) ));
 
   ctx->chainer    = fd_chainer_join     ( fd_chainer_new     ( ctx->chainer,   tile->rotor.slot_max, tile->rotor.max_shreds_per_block, ctx->repair_seed ) );
-  ctx->schedulor  = fd_schedulor_join   ( fd_schedulor_new   ( ctx->schedulor, block_max( tile ), ctx->repair_seed                                      ) );
+  ctx->schedulor  = fd_schedulor_join   ( fd_schedulor_new   ( ctx->schedulor, fd_chainer_blk_max( tile->rotor.slot_max ), ctx->repair_seed             ) );
   ctx->requestor  = fd_requestor_join   ( fd_requestor_new   ( ctx->requestor                                                                           ) );
   ctx->protocol   = fd_repair_join      ( fd_repair_new      ( ctx->protocol,  &ctx->identity_public_key                                                ) );
   ctx->policy     = fd_policy_join      ( fd_policy_new      ( ctx->policy,    FD_REPAIR_PEER_MAX, ctx->repair_seed, ctx->repair_nonce_ss               ) );
@@ -1009,7 +1005,7 @@ unprivileged_init( fd_topo_t const *      topo,
   ctx->toss_queue = toss_queue_join     ( toss_queue_new     ( ctx->toss_queue                                                                          ) );
   ctx->redeliver  = out_queue_join      ( out_queue_new      ( ctx->redeliver, fec_max( tile )                                                          ) );
   FD_TEST( ctx->chainer && ctx->schedulor && ctx->requestor && ctx->protocol && ctx->policy && ctx->rtt && ctx->stats && ctx->signs_map && ctx->toss_queue && ctx->redeliver );
-  FD_TEST( fd_slotv_pool_max( ctx->chainer->slotv_pool )==block_max( tile ) );
+  FD_TEST( fd_slotv_pool_max( ctx->chainer->slotv_pool )==fd_chainer_blk_max( tile->rotor.slot_max ) );
 
   ctx->keyswitch = fd_keyswitch_join( fd_topo_obj_laddr( topo, tile->id_keyswitch_obj_id ) );
   FD_TEST( ctx->keyswitch );
