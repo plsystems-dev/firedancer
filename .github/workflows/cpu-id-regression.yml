@@ -1,0 +1,29 @@
+name: CPU ID regression
+
+on:
+  push:
+    branches: [ci/offline-cpu-id-limit]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build regression
+        run: make MACHINE=linux_${{ matrix.compiler }}_noarch64 -j2 test_cpu_topology
+      - name: Run registered test with NUMA system calls
+        run: |
+          test_bin=(build/linux/${{ matrix.compiler }}/noarch64/*/unit-test/test_cpu_topology)
+          manifest="${test_bin[0]%/*}/automatic.txt"
+          make MACHINE=linux_${{ matrix.compiler }}_noarch64 "$manifest"
+          grep -Fx "${test_bin[0]}" "$manifest" > /tmp/cpu-id-automatic.txt
+          sudo contrib/test/run_unit_tests.sh --tests /tmp/cpu-id-automatic.txt --page-sz normal --page-cnt 6 -j 1 -v
+          sudo grep -F 'pass (NUMA policy syscalls real)' "${test_bin[0]%/unit-test/*}"/log/test_cpu_topology/*-full.log
